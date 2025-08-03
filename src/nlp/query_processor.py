@@ -224,7 +224,6 @@ class QueryProcessor:
             
         except Exception as e:
             logger.error(f"Failed to process natural language query: {e}")
-            from datetime import datetime
             return QueryResult(
                 columns=[],
                 rows=[],
