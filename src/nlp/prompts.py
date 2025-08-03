@@ -3,7 +3,7 @@
 from langchain.prompts import PromptTemplate
 
 SQL_GENERATION_PROMPT = PromptTemplate(
-    input_variables=["schema", "question"],
+    input_variables=["schema", "question", "query_type_rules"],
     template="""You are a SQL expert. Given the database schema below, write a SQL query to answer the user's question.
 
 Database Schema:
@@ -17,9 +17,12 @@ Rules:
 3. Use proper JOIN clauses when accessing multiple tables
 4. Include appropriate WHERE clauses for filtering
 5. Use aggregate functions (COUNT, SUM, AVG, etc.) when needed
-6. Ensure the query is safe and does not modify data (SELECT only)
+{query_type_rules}
 7. Add LIMIT clause if the result set might be very large
 8. Use proper column aliases for better readability
+9. PRESERVE ALL user-specified data including Unicode characters (Korean, Japanese, Chinese, etc.)
+10. When creating INSERT statements, include ALL fields mentioned by the user
+11. Map user terms correctly: "native name" → native_name, "full name" → full_name, etc.
 
 Return only the SQL query without any explanation or formatting:"""
 )

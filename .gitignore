@@ -46,6 +46,7 @@ logs/
 .coverage
 htmlcov/
 .tox/
+tests/
 
 # Documentation build files
 docs/_build/

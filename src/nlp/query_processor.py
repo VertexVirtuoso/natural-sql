@@ -132,9 +132,19 @@ class QueryProcessor:
         
         return "\n".join(schema_parts)
     
-    def _validate_query(self, query: str) -> bool:
+    def _validate_query(self, query: str, admin_mode: bool = False) -> bool:
         """Validate the generated SQL query for safety and correctness."""
-        # Basic safety checks
+        if admin_mode:
+            # In admin mode, allow modification queries but block destructive schema operations
+            destructive_keywords = ['DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'GRANT', 'REVOKE']
+            query_upper = query.upper()
+            for keyword in destructive_keywords:
+                if keyword in query_upper:
+                    logger.warning(f"Destructive keyword '{keyword}' found in query")
+                    return False
+            return True
+        
+        # Standard mode: Basic safety checks
         dangerous_keywords = [
             'DROP', 'DELETE', 'INSERT', 'UPDATE', 'ALTER', 'CREATE',
             'TRUNCATE', 'REPLACE', 'GRANT', 'REVOKE'
@@ -166,18 +176,24 @@ class QueryProcessor:
         
         return query
     
-    def process_natural_language_query(self, natural_query: str) -> QueryResult:
+    def process_natural_language_query(self, natural_query: str, admin_mode: bool = False) -> QueryResult:
         """Process a natural language query and return SQL results."""
         try:
             # Get schema summary
             schema_summary = self._get_schema_summary()
             
             # Generate SQL query
+            if admin_mode:
+                query_type_rules = "6. Generate INSERT, UPDATE, or DELETE statements when the user asks for data modifications"
+            else:
+                query_type_rules = "6. Ensure the query is safe and does not modify data (SELECT only)"
+            
             messages = [
                 {"role": "system", "content": "You are a SQL expert assistant."},
                 {"role": "user", "content": SQL_GENERATION_PROMPT.format(
                     schema=schema_summary,
-                    question=natural_query
+                    question=natural_query,
+                    query_type_rules=query_type_rules
                 )}
             ]
             
@@ -198,7 +214,10 @@ class QueryProcessor:
             logger.info(f"Generated SQL query: {sql_query}")
             
             # Validate query
-            if not self._validate_query(sql_query):
+            if not self._validate_query(sql_query, admin_mode):
+                error_msg = "Generated query failed safety validation"
+                if not admin_mode:
+                    error_msg += " (use admin mode for data modifications)"
                 return QueryResult(
                     columns=[],
                     rows=[],
@@ -206,7 +225,7 @@ class QueryProcessor:
                     execution_time=0.0,
                     query=sql_query,
                     timestamp=datetime.now(),
-                    error="Generated query failed safety validation"
+                    error=error_msg
                 )
             
             # Sanitize query
@@ -293,6 +312,44 @@ Provide 3 specific, actionable questions that would work with this database:"""
         except Exception as e:
             logger.error(f"Failed to generate suggestions: {e}")
             return []
+    
+    def generate_preview_query(self, modification_query: str) -> Optional[str]:
+        """Generate a SELECT query to preview what would be affected by a modification query."""
+        try:
+            query_upper = modification_query.upper().strip()
+            
+            if query_upper.startswith('DELETE'):
+                # Convert DELETE to SELECT to show what would be deleted
+                # Example: DELETE FROM table WHERE condition -> SELECT * FROM table WHERE condition
+                delete_pattern = r'DELETE\s+FROM\s+(\w+)(?:\s+WHERE\s+(.+?))?(?:\s*;)?$'
+                match = re.match(delete_pattern, modification_query, re.IGNORECASE | re.DOTALL)
+                if match:
+                    table_name = match.group(1)
+                    where_clause = match.group(2) if match.group(2) else ""
+                    if where_clause:
+                        return f"SELECT * FROM {table_name} WHERE {where_clause};"
+                    else:
+                        return f"SELECT COUNT(*) as total_rows_to_delete FROM {table_name};"
+            
+            elif query_upper.startswith('UPDATE'):
+                # Convert UPDATE to SELECT to show what would be updated
+                # Example: UPDATE table SET col=val WHERE condition -> SELECT * FROM table WHERE condition
+                update_pattern = r'UPDATE\s+(\w+)\s+SET\s+.+?(?:\s+WHERE\s+(.+?))?(?:\s*;)?$'
+                match = re.match(update_pattern, modification_query, re.IGNORECASE | re.DOTALL)
+                if match:
+                    table_name = match.group(1)
+                    where_clause = match.group(2) if match.group(2) else ""
+                    if where_clause:
+                        return f"SELECT * FROM {table_name} WHERE {where_clause};"
+                    else:
+                        return f"SELECT COUNT(*) as total_rows_to_update FROM {table_name};"
+            
+            # For INSERT queries, we can't preview existing data, so return None
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to generate preview query: {e}")
+            return None
     
     def clear_cache(self) -> None:
         """Clear the schema cache."""

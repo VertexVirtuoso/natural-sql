@@ -177,7 +177,7 @@ def interactive() -> None:
     console.print(Panel.fit(
         "[bold blue]Natural SQL Interactive Mode[/bold blue]\n"
         "Enter natural language questions to query your database.\n"
-        "Commands: /help, /schema, /tables, /history, /quit",
+        "Commands: /help, /schema, /tables, /history, /modify, /quit",
         border_style="blue"
     ))
     
@@ -206,6 +206,39 @@ def interactive() -> None:
                 elif question == '/clear':
                     query_processor.clear_cache()
                     console.print("[green]Cache cleared.[/green]")
+                elif question == '/modify':
+                    modification_request = Prompt.ask("Enter modification request (INSERT/UPDATE/DELETE)")
+                    if modification_request.strip():
+                        # Process modification in interactive mode
+                        try:
+                            result = query_processor.process_natural_language_query(modification_request, admin_mode=True)
+                            
+                            if not result.is_success:
+                                console.print(f"[red]Failed: {result.error}[/red]")
+                                continue
+                            
+                            console.print(f"[bold]Generated SQL:[/bold] {result.query}")
+                            
+                            # Generate preview if possible
+                            preview_query = query_processor.generate_preview_query(result.query)
+                            if preview_query:
+                                console.print("[bold yellow]Preview:[/bold yellow]")
+                                preview_result = db_connection.execute_query(preview_query)
+                                if preview_result.is_success:
+                                    display_query_result(preview_result)
+                            
+                            # Ask for confirmation
+                            if Confirm.ask("Execute this modification?", default=False):
+                                mod_result = db_connection.execute_query(result.query)
+                                if mod_result.is_success:
+                                    console.print("[green]✓ Modification completed![/green]")
+                                else:
+                                    console.print(f"[red]✗ Failed: {mod_result.error}[/red]")
+                            else:
+                                console.print("[yellow]Modification cancelled.[/yellow]")
+                                
+                        except Exception as e:
+                            console.print(f"[red]Error: {e}[/red]")
                 else:
                     console.print("[red]Unknown command. Type /help for available commands.[/red]")
                 continue
@@ -247,6 +280,7 @@ def show_help() -> None:
   /schema   - Show database schema
   /tables   - List all tables
   /history  - Show query history
+  /modify   - Execute data modifications (INSERT/UPDATE/DELETE)
   /clear    - Clear schema cache
   /quit     - Exit interactive mode
 
@@ -255,6 +289,11 @@ def show_help() -> None:
   - "How many orders were placed last month?"
   - "What are the top 5 products by sales?"
   - "Find customers who have never placed an order"
+
+[bold]Example Modifications (use /modify):[/bold]
+  - "Add a new user named John"
+  - "Update user age to 25 where name is John"
+  - "Delete users older than 65"
     """
     console.print(Panel(help_text, title="Help", border_style="green"))
 
@@ -346,6 +385,124 @@ def test_connection() -> None:
         console.print(f"Found {len(table_names)} tables: {', '.join(table_names)}")
     else:
         console.print("[red]✗ Database connection failed![/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def modify(
+    question: Optional[str] = typer.Argument(None, help="Natural language modification request"),
+    output_format: str = typer.Option("table", "--format", "-f", help="Output format: table, json, csv"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would be done without executing"),
+    debug: bool = typer.Option(False, "--debug", "-d", help="Enable debug logging")
+) -> None:
+    """Execute a natural language modification query (INSERT, UPDATE, DELETE) with confirmation."""
+    setup_logging(debug)
+    
+    if not initialize_components():
+        raise typer.Exit(1)
+    
+    # Get question from user if not provided
+    if not question:
+        question = Prompt.ask("Enter your modification request")
+    
+    if not question.strip():
+        console.print("[red]Modification request cannot be empty.[/red]")
+        raise typer.Exit(1)
+    
+    # Show progress
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True
+    ) as progress:
+        task = progress.add_task("Processing modification request...", total=None)
+        
+        # Generate the modification query
+        result = query_processor.process_natural_language_query(question, admin_mode=True)
+    
+    if not result.is_success:
+        console.print(f"[red]Failed to generate modification query: {result.error}[/red]")
+        raise typer.Exit(1)
+    
+    # Display the generated query
+    console.print(f"\n[bold]Modification Request:[/bold] {question}")
+    console.print(f"[bold]Generated SQL:[/bold] {result.query}")
+    
+    # Check if this is a modification query
+    query_upper = result.query.upper().strip()
+    is_modification = any(query_upper.startswith(keyword) for keyword in ['INSERT', 'UPDATE', 'DELETE'])
+    
+    if not is_modification:
+        console.print("[yellow]This appears to be a SELECT query, not a modification. Use 'natural-sql query' instead.[/yellow]")
+        display_query_result(result, output_format)
+        return
+    
+    # Generate preview for DELETE/UPDATE operations
+    preview_query = query_processor.generate_preview_query(result.query)
+    if preview_query:
+        console.print(f"\n[bold yellow]Preview of affected rows:[/bold yellow]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            task = progress.add_task("Generating preview...", total=None)
+            preview_result = db_connection.execute_query(preview_query)
+        
+        if preview_result.is_success:
+            display_query_result(preview_result, output_format)
+        else:
+            console.print(f"[yellow]Could not generate preview: {preview_result.error}[/yellow]")
+    
+    # Show dry run information
+    if dry_run:
+        console.print(f"\n[bold blue]DRY RUN MODE:[/bold blue] The above query would be executed.")
+        console.print("[dim]Use without --dry-run to actually execute the modification.[/dim]")
+        return
+    
+    # Ask for confirmation
+    console.print(f"\n[bold red]⚠️  WARNING:[/bold red] This will modify your database!")
+    
+    operation_type = "UNKNOWN"
+    if query_upper.startswith('INSERT'):
+        operation_type = "INSERT"
+    elif query_upper.startswith('UPDATE'):
+        operation_type = "UPDATE" 
+    elif query_upper.startswith('DELETE'):
+        operation_type = "DELETE"
+    
+    console.print(f"[yellow]Operation type: {operation_type}[/yellow]")
+    
+    if not Confirm.ask("Do you want to proceed with this modification?", default=False):
+        console.print("[yellow]Modification cancelled.[/yellow]")
+        return
+    
+    # Execute the modification
+    console.print("\n[bold]Executing modification...[/bold]")
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True
+    ) as progress:
+        task = progress.add_task("Executing modification...", total=None)
+        
+        # Execute the original modification query
+        modification_result = db_connection.execute_query(result.query)
+    
+    if modification_result.is_success:
+        console.print(f"[green]✓ Modification completed successfully![/green]")
+        console.print(f"[dim]Execution time: {modification_result.execution_time:.3f} seconds[/dim]")
+        
+        # Show affected rows count if available
+        if hasattr(modification_result, 'row_count') and modification_result.row_count > 0:
+            console.print(f"[dim]Rows affected: {modification_result.row_count}[/dim]")
+    else:
+        console.print(f"[red]✗ Modification failed: {modification_result.error}[/red]")
         raise typer.Exit(1)
 
 
