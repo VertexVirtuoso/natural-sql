@@ -48,6 +48,16 @@ htmlcov/
 .tox/
 tests/
 
+# Vector store and knowledge base (Phase 2)
+vector_db/
+knowledge/
+*.db
+*.sqlite
+chromadb.sqlite3
+chroma.sqlite3
+.chroma/
+knowledge_examples/
+
 # Documentation build files
 docs/_build/
 

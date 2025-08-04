@@ -507,6 +507,219 @@ def modify(
 
 
 @app.command()
+def setup_knowledge() -> None:
+    """Set up the knowledge base by copying example files."""
+    import shutil
+    from pathlib import Path
+    
+    console.print("[bold blue]Natural SQL Knowledge Base Setup[/bold blue]")
+    console.print("This will copy example knowledge files to your local knowledge directory.")
+    
+    # Get project root and paths
+    project_root = Path(__file__).parent.parent.parent
+    examples_dir = project_root / "knowledge_examples"
+    knowledge_dir = project_root / "knowledge"
+    
+    if not examples_dir.exists():
+        console.print(f"[red]Examples directory not found: {examples_dir}[/red]")
+        console.print("[yellow]Make sure you're running this from the project directory.[/yellow]")
+        raise typer.Exit(1)
+    
+    # Check if knowledge directory already exists
+    if knowledge_dir.exists():
+        if not Confirm.ask(f"Knowledge directory already exists at {knowledge_dir}. Overwrite?", default=False):
+            console.print("[yellow]Setup cancelled.[/yellow]")
+            return
+        shutil.rmtree(knowledge_dir)
+    
+    # Create knowledge directory
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    
+    console.print(f"\n[green]Creating knowledge directory:[/green] {knowledge_dir}")
+    
+    # Copy all example files
+    copied_files = []
+    for example_file in examples_dir.glob("*.example.json"):
+        target_name = example_file.name.replace(".example.json", ".json")
+        target_path = knowledge_dir / target_name
+        
+        shutil.copy2(example_file, target_path)
+        copied_files.append(target_name)
+        console.print(f"[green]✓[/green] Copied {target_name}")
+    
+    # Copy README for reference
+    readme_source = examples_dir / "README.md"
+    if readme_source.exists():
+        readme_target = knowledge_dir / "README.md"
+        shutil.copy2(readme_source, readme_target)
+        console.print(f"[green]✓[/green] Copied README.md")
+    
+    console.print(f"\n[bold green]✓ Knowledge base setup completed![/bold green]")
+    console.print(f"[dim]Copied {len(copied_files)} knowledge files to {knowledge_dir}[/dim]")
+    
+    console.print("\n[bold]Next steps:[/bold]")
+    console.print("1. [yellow]Customize the knowledge files[/yellow] in the knowledge/ directory for your specific use case")
+    console.print("2. [yellow]Run your first query[/yellow] - the system will automatically vectorize the knowledge")
+    console.print("3. [yellow]The system will learn[/yellow] from your interactions and get smarter over time")
+    
+    console.print(f"\n[dim]Knowledge files are gitignored for privacy.[/dim]")
+
+
+@app.command()
+def knowledge_stats() -> None:
+    """Show statistics about the vector knowledge base."""
+    if not initialize_components():
+        raise typer.Exit(1)
+    
+    console.print("[bold blue]Vector Knowledge Base Statistics[/bold blue]")
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True
+    ) as progress:
+        task = progress.add_task("Gathering knowledge statistics...", total=None)
+        stats = query_processor.get_knowledge_stats()
+    
+    if "error" in stats:
+        console.print(f"[red]Error: {stats['error']}[/red]")
+        console.print("[yellow]Run 'natural-sql setup-knowledge' to initialize the knowledge base.[/yellow]")
+        return
+    
+    # Display statistics in a nice table
+    table = Table(title="Knowledge Base Statistics")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    
+    table.add_row("Total Documents", str(stats.get("total_documents", 0)))
+    
+    # Document types
+    types = stats.get("types", {})
+    for doc_type, count in types.items():
+        table.add_row(f"  {doc_type.replace('_', ' ').title()}", str(count))
+    
+    # Sources
+    table.add_row("", "")  # Empty row for separation
+    table.add_row("[bold]Sources", "")
+    sources = stats.get("sources", {})
+    for source, count in sources.items():
+        table.add_row(f"  {source.replace('_', ' ').title()}", str(count))
+    
+    console.print(table)
+    
+    # Paths info
+    console.print(f"\n[dim]Vector Store: {stats.get('vector_store_path', 'Unknown')}[/dim]")
+    console.print(f"[dim]Knowledge Files: {stats.get('knowledge_path', 'Unknown')}[/dim]")
+
+
+@app.command()
+def clear_knowledge() -> None:
+    """Clear all vector knowledge (reset to initial state)."""
+    if not initialize_components():
+        raise typer.Exit(1)
+    
+    console.print("[bold red]⚠️  WARNING: This will delete all learned knowledge![/bold red]")
+    console.print("This includes:")
+    console.print("• All vectorized knowledge from JSON files")
+    console.print("• All learning from your previous interactions")
+    console.print("• Query patterns and corrections")
+    
+    if not Confirm.ask("\nAre you sure you want to clear all knowledge?", default=False):
+        console.print("[yellow]Operation cancelled.[/yellow]")
+        return
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True
+    ) as progress:
+        task = progress.add_task("Clearing knowledge base...", total=None)
+        query_processor.clear_vector_knowledge()
+    
+    console.print("[green]✓ Knowledge base cleared successfully![/green]")
+    console.print("[yellow]Run 'natural-sql setup-knowledge' to reinitialize with examples.[/yellow]")
+
+
+@app.command()
+def add_correction(
+    original_query: str = typer.Argument(..., help="The original user query that failed"),
+    failed_sql: str = typer.Argument(..., help="The SQL that failed"),
+    corrected_sql: str = typer.Argument(..., help="The corrected SQL"),
+    lesson: str = typer.Argument(..., help="What was learned from this correction")
+) -> None:
+    """Add a manual correction to the knowledge base."""
+    if not initialize_components():
+        raise typer.Exit(1)
+    
+    console.print("[bold blue]Adding Manual Correction[/bold blue]")
+    console.print(f"[yellow]Original Query:[/yellow] {original_query}")
+    console.print(f"[red]Failed SQL:[/red] {failed_sql}")
+    console.print(f"[green]Corrected SQL:[/green] {corrected_sql}")
+    console.print(f"[blue]Lesson:[/blue] {lesson}")
+    
+    if not Confirm.ask("\nAdd this correction to the knowledge base?", default=True):
+        console.print("[yellow]Correction cancelled.[/yellow]")
+        return
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True
+    ) as progress:
+        task = progress.add_task("Adding correction...", total=None)
+        query_processor.add_manual_correction(original_query, failed_sql, corrected_sql, lesson)
+    
+    console.print("[green]✓ Correction added successfully![/green]")
+    console.print("[dim]The system will use this correction to improve future queries.[/dim]")
+
+
+@app.command()
+def similar_queries(
+    query: str = typer.Argument(..., help="Query to find similar examples for"),
+    limit: int = typer.Option(5, "--limit", "-l", help="Number of similar queries to show")
+) -> None:
+    """Find similar queries from the knowledge base."""
+    if not initialize_components():
+        raise typer.Exit(1)
+    
+    console.print(f"[bold blue]Similar Queries for:[/bold blue] {query}")
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True
+    ) as progress:
+        task = progress.add_task("Searching for similar queries...", total=None)
+        similar = query_processor.get_similar_queries(query, limit)
+    
+    if not similar:
+        console.print("[yellow]No similar queries found.[/yellow]")
+        console.print("[dim]Try different wording or add more queries to build up the knowledge base.[/dim]")
+        return
+    
+    for i, sim_query in enumerate(similar, 1):
+        console.print(f"\n[bold cyan]{i}. Similarity Score: {sim_query.get('similarity_score', 0):.3f}[/bold cyan]")
+        
+        metadata = sim_query.get('metadata', {})
+        console.print(f"[yellow]User Query:[/yellow] {metadata.get('user_query', 'N/A')}")
+        
+        sql = sim_query.get('sql', metadata.get('sql', 'N/A'))
+        console.print(f"[green]SQL:[/green] {sql}")
+        
+        context = sim_query.get('context', metadata.get('context', ''))
+        if context:
+            console.print(f"[blue]Context:[/blue] {context}")
+        
+        doc_type = sim_query.get('type', 'unknown')
+        source = metadata.get('source', 'unknown')
+        console.print(f"[dim]Type: {doc_type}, Source: {source}[/dim]")
+
+
+@app.command()
 def version() -> None:
     """Show version information."""
     from .. import __version__
